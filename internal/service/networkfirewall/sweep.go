@@ -12,9 +12,15 @@ import (
 	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
 	"github.com/hashicorp/terraform-provider-aws/internal/sweep"
 	"github.com/hashicorp/terraform-provider-aws/internal/sweep/awsv2"
+	fwsweep "github.com/hashicorp/terraform-provider-aws/internal/sweep/framework"
 )
 
 func RegisterSweepers() {
+	resource.AddTestSweepers("aws_networkfirewall_container_association", &resource.Sweeper{
+		Name: "aws_networkfirewall_container_association",
+		F:    sweepContainerAssociations,
+	})
+
 	resource.AddTestSweepers("aws_networkfirewall_firewall_policy", &resource.Sweeper{
 		Name: "aws_networkfirewall_firewall_policy",
 		F:    sweepFirewallPolicies,
@@ -204,6 +210,45 @@ func sweepRuleGroups(region string) error {
 
 	if err != nil {
 		return fmt.Errorf("error sweeping NetworkFirewall Rule Groups (%s): %w", region, err)
+	}
+
+	return nil
+}
+
+func sweepContainerAssociations(region string) error {
+	ctx := sweep.Context(region)
+	client, err := sweep.SharedRegionalSweepClient(ctx, region)
+	if err != nil {
+		return fmt.Errorf("getting client: %w", err)
+	}
+	conn := client.NetworkFirewallClient(ctx)
+	input := &networkfirewall.ListContainerAssociationsInput{}
+	sweepResources := make([]sweep.Sweepable, 0)
+
+	pages := networkfirewall.NewListContainerAssociationsPaginator(conn, input)
+	for pages.HasMorePages() {
+		page, err := pages.NextPage(ctx)
+
+		if awsv2.SkipSweepError(err) {
+			log.Printf("[WARN] Skipping NetworkFirewall Container Association sweep for %s: %s", region, err)
+			return nil
+		}
+
+		if err != nil {
+			return fmt.Errorf("error listing NetworkFirewall Container Associations (%s): %w", region, err)
+		}
+
+		for _, v := range page.ContainerAssociations {
+			sweepResources = append(sweepResources, fwsweep.NewSweepResource(newContainerAssociationResource, client,
+				fwsweep.NewAttribute("container_association_arn", aws.ToString(v.Arn)),
+			))
+		}
+	}
+
+	err = sweep.SweepOrchestrator(ctx, sweepResources)
+
+	if err != nil {
+		return fmt.Errorf("error sweeping NetworkFirewall Container Associations (%s): %w", region, err)
 	}
 
 	return nil

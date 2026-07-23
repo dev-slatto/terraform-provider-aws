@@ -27,6 +27,15 @@ func (p *servicePackage) FrameworkDataSources(ctx context.Context) []*inttypes.S
 func (p *servicePackage) FrameworkResources(ctx context.Context) []*inttypes.ServicePackageFrameworkResource {
 	return []*inttypes.ServicePackageFrameworkResource{
 		{
+			Factory:  newContainerAssociationResource,
+			TypeName: "aws_networkfirewall_container_association",
+			Name:     "Container Association",
+			Tags: unique.Make(inttypes.ServicePackageResourceTags{
+				IdentifierAttribute: "container_association_arn",
+			}),
+			Region: inttypes.ResourceRegionDefault(),
+		},
+		{
 			Factory:  newFirewallTransitGatewayAttachmentAccepterResource,
 			TypeName: "aws_networkfirewall_firewall_transit_gateway_attachment_accepter",
 			Name:     "Firewall Transit Gateway Attachment Accepter",
