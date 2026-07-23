@@ -193,8 +193,14 @@ func TestAccNetworkFirewallContainerAssociation_attributeFilters(t *testing.T) {
 					},
 				},
 				ConfigStateChecks: []statecheck.StateCheck{
-					statecheck.ExpectKnownValue(resourceName, tfjsonpath.New("container_monitoring_configurations").AtSliceIndex(0).AtMapKey("attribute_filters").AtSliceIndex(0).AtMapKey(names.AttrKey), knownvalue.StringExact("app")),
-					statecheck.ExpectKnownValue(resourceName, tfjsonpath.New("container_monitoring_configurations").AtSliceIndex(0).AtMapKey("attribute_filters").AtSliceIndex(0).AtMapKey(names.AttrValue), knownvalue.StringExact("backend")),
+					statecheck.ExpectKnownValue(resourceName,
+						tfjsonpath.New("container_monitoring_configurations").AtSliceIndex(0).AtMapKey("attribute_filters").AtSliceIndex(0).AtMapKey(names.AttrKey),
+						knownvalue.StringExact("app"),
+					),
+					statecheck.ExpectKnownValue(resourceName,
+						tfjsonpath.New("container_monitoring_configurations").AtSliceIndex(0).AtMapKey("attribute_filters").AtSliceIndex(0).AtMapKey(names.AttrValue),
+						knownvalue.StringExact("backend"),
+					),
 				},
 			},
 			{
@@ -365,7 +371,6 @@ func testAccCheckContainerAssociationExists(ctx context.Context, t *testing.T, n
 		conn := acctest.ProviderMeta(ctx, t).NetworkFirewallClient(ctx)
 
 		output, err := tfnetworkfirewall.FindContainerAssociationByARN(ctx, conn, rs.Primary.Attributes["container_association_arn"])
-
 		if err != nil {
 			return err
 		}
@@ -379,9 +384,7 @@ func testAccCheckContainerAssociationExists(ctx context.Context, t *testing.T, n
 func testAccContainerAssociationPreCheck(ctx context.Context, t *testing.T) {
 	conn := acctest.ProviderMeta(ctx, t).NetworkFirewallClient(ctx)
 
-	input := &networkfirewall.ListContainerAssociationsInput{}
-
-	_, err := conn.ListContainerAssociations(ctx, input)
+	_, err := conn.ListContainerAssociations(ctx, &networkfirewall.ListContainerAssociationsInput{})
 
 	if acctest.PreCheckSkipError(err) {
 		t.Skipf("skipping acceptance testing: %s", err)

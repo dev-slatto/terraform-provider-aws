@@ -51,63 +51,37 @@ resource "aws_networkfirewall_container_association" "example" {
 }
 ```
 
-### Multiple Clusters
-
-```terraform
-resource "aws_networkfirewall_container_association" "example" {
-  container_association_name = "multi-cluster-association"
-  type                       = "EKS"
-
-  container_monitoring_configurations {
-    cluster_arn = aws_eks_cluster.cluster_a.arn
-  }
-
-  container_monitoring_configurations {
-    cluster_arn = aws_eks_cluster.cluster_b.arn
-
-    attribute_filters {
-      key   = "environment"
-      value = "staging"
-    }
-  }
-}
-```
-
 ## Argument Reference
 
 This resource supports the following arguments:
 
-* `container_association_name` - (Required, Forces new resource) The descriptive name of the container association. Must contain only alphanumeric characters and hyphens, with a length between 1 and 128 characters.
-* `container_monitoring_configurations` - (Required) One or more container monitoring configurations defining which clusters to monitor. See [Container Monitoring Configurations](#container-monitoring-configurations) below.
-* `description` - (Optional) A description of the container association.
+* `container_association_name` - (Required, Forces new resource) Descriptive name of the container association. Must contain only alphanumeric characters and hyphens, between 1 and 128 characters.
+* `container_monitoring_configurations` - (Required) One or more container monitoring configurations defining which clusters to monitor. See [`container_monitoring_configurations` Block](#container_monitoring_configurations-block) below.
+* `description` - (Optional) Description of the container association.
 * `region` - (Optional) Region where this resource will be [managed](https://docs.aws.amazon.com/general/latest/gr/rande.html#regional-endpoints). Defaults to the Region set in the [provider configuration](https://registry.terraform.io/providers/hashicorp/aws/latest/docs#aws-configuration-reference).
 * `tags` - (Optional) Map of resource tags to associate with the resource. If configured with a provider [`default_tags` configuration block](https://registry.terraform.io/providers/hashicorp/aws/latest/docs#default_tags-configuration-block) present, tags with matching keys will overwrite those defined at the provider-level.
-* `type` - (Required, Forces new resource) The type of container orchestration platform. Valid values: `ECS`, `EKS`.
+* `type` - (Required, Forces new resource) Type of container orchestration platform. Valid values: `ECS`, `EKS`.
 
-### Container Monitoring Configurations
+### `container_monitoring_configurations` Block
 
-The `container_monitoring_configurations` block supports the following arguments:
+* `attribute_filters` - (Optional) Key-value pairs that filter which containers within the cluster are monitored. See [`attribute_filters` Block](#attribute_filters-block) below.
+* `cluster_arn` - (Required) ARN of the ECS or EKS cluster to monitor.
 
-* `cluster_arn` - (Required) The ARN of the ECS or EKS cluster to monitor.
-* `attribute_filters` - (Optional) One or more key-value pairs that filter which containers within the cluster are monitored. Only containers matching all specified attributes are included. See [Attribute Filters](#attribute-filters) below.
+### `attribute_filters` Block
 
-### Attribute Filters
-
-The `attribute_filters` block supports the following arguments:
-
-* `key` - (Required) The key of the container attribute to filter on (for example, a Kubernetes label key).
-* `value` - (Required) The value of the container attribute to filter on.
+* `key` - (Required) Key of the container attribute to filter on (for example, a Kubernetes label key).
+* `value` - (Required) Value of the container attribute to filter on.
 
 ## Attribute Reference
 
 This resource exports the following attributes in addition to the arguments above:
 
-* `container_association_arn` - The ARN of the container association.
-* `last_updated_time` - The last time the container association resolved new container IP addresses.
-* `resolved_cidr_count` - The number of CIDR blocks resolved from monitored containers.
-* `status` - The current status of the container association. Possible values: `ACTIVE`, `CREATING`, `DELETING`.
-* `tags_all` - A map of tags assigned to the resource, including those inherited from the provider [`default_tags` configuration block](https://registry.terraform.io/providers/hashicorp/aws/latest/docs#default_tags-configuration-block).
-* `update_token` - A token used for optimistic locking when updating the resource.
+* `container_association_arn` - ARN of the container association.
+* `last_updated_time` - Last time the container association resolved new container IP addresses.
+* `resolved_cidr_count` - Number of CIDR blocks resolved from monitored containers.
+* `status` - Current status of the container association. Possible values: `ACTIVE`, `CREATING`, `DELETING`.
+* `tags_all` - Map of tags assigned to the resource, including those inherited from the provider [`default_tags` configuration block](https://registry.terraform.io/providers/hashicorp/aws/latest/docs#default_tags-configuration-block).
+* `update_token` - Token used for optimistic locking when updating the resource.
 
 ## Timeouts
 

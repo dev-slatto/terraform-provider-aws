@@ -1,6 +1,8 @@
 // Copyright IBM Corp. 2014, 2026
 // SPDX-License-Identifier: MPL-2.0
 
+// DONOTCOPY: Copying old resources spreads bad habits. Use skaff instead.
+
 package networkfirewall
 
 import (
@@ -9,6 +11,7 @@ import (
 	"time"
 
 	"github.com/YakDriver/regexache"
+	"github.com/YakDriver/smarterr"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/networkfirewall"
 	awstypes "github.com/aws/aws-sdk-go-v2/service/networkfirewall/types"
@@ -16,7 +19,6 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework-validators/listvalidator"
 	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
 	"github.com/hashicorp/terraform-plugin-framework/diag"
-	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
@@ -27,9 +29,10 @@ import (
 	"github.com/hashicorp/terraform-provider-aws/internal/errs"
 	"github.com/hashicorp/terraform-provider-aws/internal/errs/fwdiag"
 	"github.com/hashicorp/terraform-provider-aws/internal/framework"
-	fwflex "github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
+	"github.com/hashicorp/terraform-provider-aws/internal/framework/flex"
 	fwtypes "github.com/hashicorp/terraform-provider-aws/internal/framework/types"
 	"github.com/hashicorp/terraform-provider-aws/internal/retry"
+	"github.com/hashicorp/terraform-provider-aws/internal/smerr"
 	tftags "github.com/hashicorp/terraform-provider-aws/internal/tags"
 	"github.com/hashicorp/terraform-provider-aws/internal/tfresource"
 	"github.com/hashicorp/terraform-provider-aws/names"
@@ -37,6 +40,8 @@ import (
 
 // @FrameworkResource("aws_networkfirewall_container_association", name="Container Association")
 // @Tags(identifierAttribute="container_association_arn")
+// @Testing(existsType="github.com/aws/aws-sdk-go-v2/service/networkfirewall;networkfirewall.DescribeContainerAssociationOutput")
+// @Testing(importIgnore="update_token")
 func newContainerAssociationResource(_ context.Context) (resource.ResourceWithConfigure, error) {
 	r := &containerAssociationResource{}
 
@@ -47,13 +52,17 @@ func newContainerAssociationResource(_ context.Context) (resource.ResourceWithCo
 	return r, nil
 }
 
+const (
+	ResNameContainerAssociation = "Container Association"
+)
+
 type containerAssociationResource struct {
 	framework.ResourceWithModel[containerAssociationResourceModel]
 	framework.WithTimeouts
 }
 
-func (r *containerAssociationResource) Schema(ctx context.Context, request resource.SchemaRequest, response *resource.SchemaResponse) {
-	response.Schema = schema.Schema{
+func (r *containerAssociationResource) Schema(ctx context.Context, req resource.SchemaRequest, resp *resource.SchemaResponse) {
+	resp.Schema = schema.Schema{
 		Attributes: map[string]schema.Attribute{
 			"container_association_arn": schema.StringAttribute{
 				Computed: true,
@@ -140,248 +149,221 @@ func (r *containerAssociationResource) Schema(ctx context.Context, request resou
 	}
 }
 
-func (r *containerAssociationResource) Create(ctx context.Context, request resource.CreateRequest, response *resource.CreateResponse) {
-	var data containerAssociationResourceModel
-	response.Diagnostics.Append(request.Plan.Get(ctx, &data)...)
-	if response.Diagnostics.HasError() {
+func (r *containerAssociationResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
+	conn := r.Meta().NetworkFirewallClient(ctx)
+
+	var plan containerAssociationResourceModel
+	smerr.AddEnrich(ctx, &resp.Diagnostics, req.Plan.Get(ctx, &plan))
+	if resp.Diagnostics.HasError() {
 		return
 	}
 
-	conn := r.Meta().NetworkFirewallClient(ctx)
-
-	name := data.ContainerAssociationName.ValueString()
-
-	configs, expandDiags := expandContainerMonitoringConfigurations(ctx, data.ContainerMonitoringConfigurations)
-	response.Diagnostics.Append(expandDiags...)
-	if response.Diagnostics.HasError() {
+	configs, d := expandContainerMonitoringConfigurations(ctx, plan.ContainerMonitoringConfigurations)
+	resp.Diagnostics.Append(d...)
+	if resp.Diagnostics.HasError() {
 		return
 	}
 
 	input := networkfirewall.CreateContainerAssociationInput{
-		ContainerAssociationName:          aws.String(name),
+		ContainerAssociationName:          plan.ContainerAssociationName.ValueStringPointer(),
 		ContainerMonitoringConfigurations: configs,
-		Type:                              data.Type.ValueEnum(),
+		Type:                              plan.Type.ValueEnum(),
 		Tags:                              getTagsIn(ctx),
 	}
-	if !data.Description.IsNull() && !data.Description.IsUnknown() {
-		input.Description = data.Description.ValueStringPointer()
+	if !plan.Description.IsNull() {
+		input.Description = plan.Description.ValueStringPointer()
 	}
 
-	output, err := conn.CreateContainerAssociation(ctx, &input)
+	out, err := conn.CreateContainerAssociation(ctx, &input)
 	if err != nil {
-		response.Diagnostics.AddError(fmt.Sprintf("creating NetworkFirewall Container Association (%s)", name), err.Error())
-
+		smerr.AddError(ctx, &resp.Diagnostics, err, smerr.ID, plan.ContainerAssociationName.String())
 		return
 	}
 
-	arn := aws.ToString(output.ContainerAssociationArn)
-	data.ContainerAssociationARN = fwflex.StringToFramework(ctx, output.ContainerAssociationArn)
-	data.Status = fwtypes.StringEnumValue(output.Status)
-	data.UpdateToken = fwflex.StringToFramework(ctx, output.UpdateToken)
+	arn := aws.ToString(out.ContainerAssociationArn)
+	plan.ContainerAssociationARN = flex.StringToFramework(ctx, out.ContainerAssociationArn)
+	plan.Status = fwtypes.StringEnumValue(out.Status)
+	plan.UpdateToken = flex.StringToFramework(ctx, out.UpdateToken)
 
-	outputD, err := waitContainerAssociationCreated(ctx, conn, arn, r.CreateTimeout(ctx, data.Timeouts))
+	createTimeout := r.CreateTimeout(ctx, plan.Timeouts)
+	outD, err := waitContainerAssociationCreated(ctx, conn, arn, createTimeout)
 	if err != nil {
-		response.Diagnostics.AddError(fmt.Sprintf("waiting for NetworkFirewall Container Association (%s) create", arn), err.Error())
-
+		smerr.AddError(ctx, &resp.Diagnostics, err, smerr.ID, arn)
 		return
 	}
 
-	data.Status = fwtypes.StringEnumValue(outputD.Status)
-	if outputD.LastUpdatedTime != nil {
-		data.LastUpdatedTime = fwflex.StringValueToFramework(ctx, outputD.LastUpdatedTime.Format(time.RFC3339))
+	plan.Status = fwtypes.StringEnumValue(outD.Status)
+	if outD.LastUpdatedTime != nil {
+		plan.LastUpdatedTime = flex.StringValueToFramework(ctx, outD.LastUpdatedTime.Format(time.RFC3339))
 	}
-	data.ResolvedCIDRCount = fwflex.Int32ToFrameworkInt64(ctx, outputD.ResolvedCidrCount)
+	plan.ResolvedCIDRCount = flex.Int32ToFrameworkInt64(ctx, outD.ResolvedCidrCount)
 
-	response.Diagnostics.Append(response.State.Set(ctx, data)...)
+	smerr.AddEnrich(ctx, &resp.Diagnostics, resp.State.Set(ctx, plan))
 }
 
-func (r *containerAssociationResource) Read(ctx context.Context, request resource.ReadRequest, response *resource.ReadResponse) {
-	var data containerAssociationResourceModel
-	response.Diagnostics.Append(request.State.Get(ctx, &data)...)
-	if response.Diagnostics.HasError() {
+func (r *containerAssociationResource) Read(ctx context.Context, req resource.ReadRequest, resp *resource.ReadResponse) {
+	conn := r.Meta().NetworkFirewallClient(ctx)
+
+	var state containerAssociationResourceModel
+	smerr.AddEnrich(ctx, &resp.Diagnostics, req.State.Get(ctx, &state))
+	if resp.Diagnostics.HasError() {
 		return
 	}
 
-	conn := r.Meta().NetworkFirewallClient(ctx)
-
-	arn := data.ContainerAssociationARN.ValueString()
-	output, err := findContainerAssociationByARN(ctx, conn, arn)
+	arn := state.ContainerAssociationARN.ValueString()
+	out, err := findContainerAssociationByARN(ctx, conn, arn)
 	if retry.NotFound(err) {
-		response.Diagnostics.Append(fwdiag.NewResourceNotFoundWarningDiagnostic(err))
-		response.State.RemoveResource(ctx)
-
+		resp.Diagnostics.Append(fwdiag.NewResourceNotFoundWarningDiagnostic(err))
+		resp.State.RemoveResource(ctx)
 		return
 	}
-
 	if err != nil {
-		response.Diagnostics.AddError(fmt.Sprintf("reading NetworkFirewall Container Association (%s)", arn), err.Error())
-
+		smerr.AddError(ctx, &resp.Diagnostics, err, smerr.ID, arn)
 		return
 	}
 
-	data.ContainerAssociationARN = fwflex.StringToFramework(ctx, output.ContainerAssociationArn)
-	data.ContainerAssociationName = fwflex.StringToFramework(ctx, output.ContainerAssociationName)
-	data.Description = fwflex.StringToFramework(ctx, output.Description)
-	data.Status = fwtypes.StringEnumValue(output.Status)
-	data.Type = fwtypes.StringEnumValue(output.Type)
-	data.UpdateToken = fwflex.StringToFramework(ctx, output.UpdateToken)
-	if output.LastUpdatedTime != nil {
-		data.LastUpdatedTime = fwflex.StringValueToFramework(ctx, output.LastUpdatedTime.Format(time.RFC3339))
+	state.ContainerAssociationARN = flex.StringToFramework(ctx, out.ContainerAssociationArn)
+	state.ContainerAssociationName = flex.StringToFramework(ctx, out.ContainerAssociationName)
+	state.Description = flex.StringToFramework(ctx, out.Description)
+	state.Status = fwtypes.StringEnumValue(out.Status)
+	state.Type = fwtypes.StringEnumValue(out.Type)
+	state.UpdateToken = flex.StringToFramework(ctx, out.UpdateToken)
+	if out.LastUpdatedTime != nil {
+		state.LastUpdatedTime = flex.StringValueToFramework(ctx, out.LastUpdatedTime.Format(time.RFC3339))
 	}
-	data.ResolvedCIDRCount = fwflex.Int32ToFrameworkInt64(ctx, output.ResolvedCidrCount)
+	state.ResolvedCIDRCount = flex.Int32ToFrameworkInt64(ctx, out.ResolvedCidrCount)
 
-	configs, flattenDiags := flattenContainerMonitoringConfigurations(ctx, output.ContainerMonitoringConfigurations)
-	response.Diagnostics.Append(flattenDiags...)
-	if response.Diagnostics.HasError() {
+	configs, d := flattenContainerMonitoringConfigurations(ctx, out.ContainerMonitoringConfigurations)
+	resp.Diagnostics.Append(d...)
+	if resp.Diagnostics.HasError() {
 		return
 	}
-	data.ContainerMonitoringConfigurations = configs
+	state.ContainerMonitoringConfigurations = configs
 
-	setTagsOut(ctx, output.Tags)
+	setTagsOut(ctx, out.Tags)
 
-	response.Diagnostics.Append(response.State.Set(ctx, &data)...)
+	smerr.AddEnrich(ctx, &resp.Diagnostics, resp.State.Set(ctx, &state))
 }
 
-func (r *containerAssociationResource) Update(ctx context.Context, request resource.UpdateRequest, response *resource.UpdateResponse) {
-	var old, new containerAssociationResourceModel
-	response.Diagnostics.Append(request.State.Get(ctx, &old)...)
-	if response.Diagnostics.HasError() {
-		return
-	}
-	response.Diagnostics.Append(request.Plan.Get(ctx, &new)...)
-	if response.Diagnostics.HasError() {
-		return
-	}
-
+func (r *containerAssociationResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
 	conn := r.Meta().NetworkFirewallClient(ctx)
 
-	if !new.ContainerMonitoringConfigurations.Equal(old.ContainerMonitoringConfigurations) ||
-		!new.Description.Equal(old.Description) {
-		arn := old.ContainerAssociationARN.ValueString()
+	var plan, state containerAssociationResourceModel
+	smerr.AddEnrich(ctx, &resp.Diagnostics, req.Plan.Get(ctx, &plan))
+	smerr.AddEnrich(ctx, &resp.Diagnostics, req.State.Get(ctx, &state))
+	if resp.Diagnostics.HasError() {
+		return
+	}
 
-		configs, expandDiags := expandContainerMonitoringConfigurations(ctx, new.ContainerMonitoringConfigurations)
-		response.Diagnostics.Append(expandDiags...)
-		if response.Diagnostics.HasError() {
+	diff, d := flex.Diff(ctx, plan, state)
+	smerr.AddEnrich(ctx, &resp.Diagnostics, d)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	if diff.HasChanges() {
+		arn := state.ContainerAssociationARN.ValueString()
+
+		configs, d := expandContainerMonitoringConfigurations(ctx, plan.ContainerMonitoringConfigurations)
+		resp.Diagnostics.Append(d...)
+		if resp.Diagnostics.HasError() {
 			return
 		}
 
 		input := networkfirewall.UpdateContainerAssociationInput{
 			ContainerAssociationArn:           aws.String(arn),
 			ContainerMonitoringConfigurations: configs,
-			Type:                              new.Type.ValueEnum(),
-			UpdateToken:                       old.UpdateToken.ValueStringPointer(),
+			Type:                              plan.Type.ValueEnum(),
+			UpdateToken:                       state.UpdateToken.ValueStringPointer(),
 		}
-		if !new.Description.IsNull() && !new.Description.IsUnknown() {
-			input.Description = new.Description.ValueStringPointer()
+		if !plan.Description.IsNull() {
+			input.Description = plan.Description.ValueStringPointer()
 		}
 
-		output, err := conn.UpdateContainerAssociation(ctx, &input)
+		out, err := conn.UpdateContainerAssociation(ctx, &input)
 		if err != nil {
-			response.Diagnostics.AddError(fmt.Sprintf("updating NetworkFirewall Container Association (%s)", arn), err.Error())
-
+			smerr.AddError(ctx, &resp.Diagnostics, err, smerr.ID, arn)
 			return
 		}
 
-		new.UpdateToken = fwflex.StringToFramework(ctx, output.UpdateToken)
+		plan.UpdateToken = flex.StringToFramework(ctx, out.UpdateToken)
 
-		outputD, err := waitContainerAssociationUpdated(ctx, conn, arn, r.UpdateTimeout(ctx, new.Timeouts))
+		updateTimeout := r.UpdateTimeout(ctx, plan.Timeouts)
+		outD, err := waitContainerAssociationUpdated(ctx, conn, arn, updateTimeout)
 		if err != nil {
-			response.Diagnostics.AddError(fmt.Sprintf("waiting for NetworkFirewall Container Association (%s) update", arn), err.Error())
-
+			smerr.AddError(ctx, &resp.Diagnostics, err, smerr.ID, arn)
 			return
 		}
 
-		new.Status = fwtypes.StringEnumValue(outputD.Status)
-		if outputD.LastUpdatedTime != nil {
-			new.LastUpdatedTime = fwflex.StringValueToFramework(ctx, outputD.LastUpdatedTime.Format(time.RFC3339))
+		plan.Status = fwtypes.StringEnumValue(outD.Status)
+		if outD.LastUpdatedTime != nil {
+			plan.LastUpdatedTime = flex.StringValueToFramework(ctx, outD.LastUpdatedTime.Format(time.RFC3339))
 		}
-		new.ResolvedCIDRCount = fwflex.Int32ToFrameworkInt64(ctx, outputD.ResolvedCidrCount)
-	} else {
-		new.UpdateToken = old.UpdateToken
-		new.LastUpdatedTime = old.LastUpdatedTime
-		new.ResolvedCIDRCount = old.ResolvedCIDRCount
+		plan.ResolvedCIDRCount = flex.Int32ToFrameworkInt64(ctx, outD.ResolvedCidrCount)
 	}
 
-	response.Diagnostics.Append(response.State.Set(ctx, &new)...)
+	smerr.AddEnrich(ctx, &resp.Diagnostics, resp.State.Set(ctx, &plan))
 }
 
-func (r *containerAssociationResource) Delete(ctx context.Context, request resource.DeleteRequest, response *resource.DeleteResponse) {
-	var data containerAssociationResourceModel
-	response.Diagnostics.Append(request.State.Get(ctx, &data)...)
-	if response.Diagnostics.HasError() {
+func (r *containerAssociationResource) Delete(ctx context.Context, req resource.DeleteRequest, resp *resource.DeleteResponse) {
+	conn := r.Meta().NetworkFirewallClient(ctx)
+
+	var state containerAssociationResourceModel
+	smerr.AddEnrich(ctx, &resp.Diagnostics, req.State.Get(ctx, &state))
+	if resp.Diagnostics.HasError() {
 		return
 	}
 
-	conn := r.Meta().NetworkFirewallClient(ctx)
-
-	arn := data.ContainerAssociationARN.ValueString()
+	arn := state.ContainerAssociationARN.ValueString()
 	input := networkfirewall.DeleteContainerAssociationInput{
 		ContainerAssociationArn: aws.String(arn),
 	}
+
 	_, err := conn.DeleteContainerAssociation(ctx, &input)
-	if errs.IsA[*awstypes.ResourceNotFoundException](err) {
-		return
-	}
-
 	if err != nil {
-		response.Diagnostics.AddError(fmt.Sprintf("deleting NetworkFirewall Container Association (%s)", arn), err.Error())
-
-		return
-	}
-
-	if _, err := waitContainerAssociationDeleted(ctx, conn, arn, r.DeleteTimeout(ctx, data.Timeouts)); err != nil {
-		response.Diagnostics.AddError(fmt.Sprintf("waiting for NetworkFirewall Container Association (%s) delete", arn), err.Error())
-
-		return
-	}
-}
-
-func (r *containerAssociationResource) ImportState(ctx context.Context, request resource.ImportStateRequest, response *resource.ImportStateResponse) {
-	resource.ImportStatePassthroughID(ctx, path.Root("container_association_arn"), request, response)
-}
-
-func findContainerAssociation(ctx context.Context, conn *networkfirewall.Client, input *networkfirewall.DescribeContainerAssociationInput) (*networkfirewall.DescribeContainerAssociationOutput, error) {
-	output, err := conn.DescribeContainerAssociation(ctx, input)
-
-	if errs.IsA[*awstypes.ResourceNotFoundException](err) {
-		return nil, &retry.NotFoundError{
-			LastError: err,
+		if errs.IsA[*awstypes.ResourceNotFoundException](err) {
+			return
 		}
+		smerr.AddError(ctx, &resp.Diagnostics, err, smerr.ID, arn)
+		return
 	}
 
+	deleteTimeout := r.DeleteTimeout(ctx, state.Timeouts)
+	_, err = waitContainerAssociationDeleted(ctx, conn, arn, deleteTimeout)
 	if err != nil {
-		return nil, err
+		smerr.AddError(ctx, &resp.Diagnostics, err, smerr.ID, arn)
+		return
 	}
-
-	if output == nil {
-		return nil, tfresource.NewEmptyResultError()
-	}
-
-	return output, nil
 }
 
-func findContainerAssociationByARN(ctx context.Context, conn *networkfirewall.Client, arn string) (*networkfirewall.DescribeContainerAssociationOutput, error) {
-	input := networkfirewall.DescribeContainerAssociationInput{
-		ContainerAssociationArn: aws.String(arn),
+func (r *containerAssociationResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
+	// Import by ARN.
+	out, err := findContainerAssociationByARN(ctx, r.Meta().NetworkFirewallClient(ctx), req.ID)
+	if err != nil {
+		resp.Diagnostics.AddError(fmt.Sprintf("importing NetworkFirewall Container Association (%s)", req.ID), err.Error())
+		return
 	}
 
-	return findContainerAssociation(ctx, conn, &input)
-}
-
-func statusContainerAssociation(conn *networkfirewall.Client, arn string) retry.StateRefreshFunc {
-	return func(ctx context.Context) (any, string, error) {
-		output, err := findContainerAssociationByARN(ctx, conn, arn)
-
-		if retry.NotFound(err) {
-			return nil, "", nil
-		}
-
-		if err != nil {
-			return nil, "", err
-		}
-
-		return output, string(output.Status), nil
+	var state containerAssociationResourceModel
+	state.ContainerAssociationARN = flex.StringToFramework(ctx, out.ContainerAssociationArn)
+	state.ContainerAssociationName = flex.StringToFramework(ctx, out.ContainerAssociationName)
+	state.Description = flex.StringToFramework(ctx, out.Description)
+	state.Status = fwtypes.StringEnumValue(out.Status)
+	state.Type = fwtypes.StringEnumValue(out.Type)
+	state.UpdateToken = flex.StringToFramework(ctx, out.UpdateToken)
+	if out.LastUpdatedTime != nil {
+		state.LastUpdatedTime = flex.StringValueToFramework(ctx, out.LastUpdatedTime.Format(time.RFC3339))
 	}
+	state.ResolvedCIDRCount = flex.Int32ToFrameworkInt64(ctx, out.ResolvedCidrCount)
+
+	configs, d := flattenContainerMonitoringConfigurations(ctx, out.ContainerMonitoringConfigurations)
+	resp.Diagnostics.Append(d...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	state.ContainerMonitoringConfigurations = configs
+
+	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
 }
 
 func waitContainerAssociationCreated(ctx context.Context, conn *networkfirewall.Client, arn string, timeout time.Duration) (*networkfirewall.DescribeContainerAssociationOutput, error) {
@@ -390,16 +372,16 @@ func waitContainerAssociationCreated(ctx context.Context, conn *networkfirewall.
 		Target:                    enum.Slice(awstypes.ContainerAssociationStatusActive),
 		Refresh:                   statusContainerAssociation(conn, arn),
 		Timeout:                   timeout,
+		NotFoundChecks:            20,
 		ContinuousTargetOccurence: 2,
 	}
 
 	outputRaw, err := stateConf.WaitForStateContext(ctx)
-
-	if output, ok := outputRaw.(*networkfirewall.DescribeContainerAssociationOutput); ok {
-		return output, err
+	if out, ok := outputRaw.(*networkfirewall.DescribeContainerAssociationOutput); ok {
+		return out, smarterr.NewError(err)
 	}
 
-	return nil, err
+	return nil, smarterr.NewError(err)
 }
 
 func waitContainerAssociationUpdated(ctx context.Context, conn *networkfirewall.Client, arn string, timeout time.Duration) (*networkfirewall.DescribeContainerAssociationOutput, error) {
@@ -408,16 +390,16 @@ func waitContainerAssociationUpdated(ctx context.Context, conn *networkfirewall.
 		Target:                    enum.Slice(awstypes.ContainerAssociationStatusActive),
 		Refresh:                   statusContainerAssociation(conn, arn),
 		Timeout:                   timeout,
+		NotFoundChecks:            20,
 		ContinuousTargetOccurence: 2,
 	}
 
 	outputRaw, err := stateConf.WaitForStateContext(ctx)
-
-	if output, ok := outputRaw.(*networkfirewall.DescribeContainerAssociationOutput); ok {
-		return output, err
+	if out, ok := outputRaw.(*networkfirewall.DescribeContainerAssociationOutput); ok {
+		return out, smarterr.NewError(err)
 	}
 
-	return nil, err
+	return nil, smarterr.NewError(err)
 }
 
 func waitContainerAssociationDeleted(ctx context.Context, conn *networkfirewall.Client, arn string, timeout time.Duration) (*networkfirewall.DescribeContainerAssociationOutput, error) {
@@ -429,15 +411,50 @@ func waitContainerAssociationDeleted(ctx context.Context, conn *networkfirewall.
 	}
 
 	outputRaw, err := stateConf.WaitForStateContext(ctx)
-
-	if output, ok := outputRaw.(*networkfirewall.DescribeContainerAssociationOutput); ok {
-		return output, err
+	if out, ok := outputRaw.(*networkfirewall.DescribeContainerAssociationOutput); ok {
+		return out, smarterr.NewError(err)
 	}
 
-	return nil, err
+	return nil, smarterr.NewError(err)
 }
 
-func expandContainerMonitoringConfigurations(ctx context.Context, tfList fwtypes.ListNestedObjectValueOf[containerMonitoringConfigurationModel]) ([]awstypes.ContainerMonitoringConfiguration, diag.Diagnostics) { // nosemgrep:ci.semgrep.framework.manual-flattener-functions
+func statusContainerAssociation(conn *networkfirewall.Client, arn string) retry.StateRefreshFunc {
+	return func(ctx context.Context) (any, string, error) {
+		out, err := findContainerAssociationByARN(ctx, conn, arn)
+		if retry.NotFound(err) {
+			return nil, "", nil
+		}
+		if err != nil {
+			return nil, "", smarterr.NewError(err)
+		}
+
+		return out, string(out.Status), nil
+	}
+}
+
+func findContainerAssociationByARN(ctx context.Context, conn *networkfirewall.Client, arn string) (*networkfirewall.DescribeContainerAssociationOutput, error) {
+	input := networkfirewall.DescribeContainerAssociationInput{
+		ContainerAssociationArn: aws.String(arn),
+	}
+
+	out, err := conn.DescribeContainerAssociation(ctx, &input)
+	if err != nil {
+		if errs.IsA[*awstypes.ResourceNotFoundException](err) {
+			return nil, smarterr.NewError(&retry.NotFoundError{
+				LastError: err,
+			})
+		}
+		return nil, smarterr.NewError(err)
+	}
+
+	if out == nil {
+		return nil, smarterr.NewError(tfresource.NewEmptyResultError())
+	}
+
+	return out, nil
+}
+
+func expandContainerMonitoringConfigurations(ctx context.Context, tfList fwtypes.ListNestedObjectValueOf[containerMonitoringConfigurationModel]) ([]awstypes.ContainerMonitoringConfiguration, diag.Diagnostics) {
 	var diags diag.Diagnostics
 
 	objs, d := tfList.ToSlice(ctx)
@@ -470,7 +487,7 @@ func expandContainerMonitoringConfigurations(ctx context.Context, tfList fwtypes
 	return result, diags
 }
 
-func flattenContainerMonitoringConfigurations(ctx context.Context, apiList []awstypes.ContainerMonitoringConfiguration) (fwtypes.ListNestedObjectValueOf[containerMonitoringConfigurationModel], diag.Diagnostics) { // nosemgrep:ci.semgrep.framework.manual-flattener-functions
+func flattenContainerMonitoringConfigurations(ctx context.Context, apiList []awstypes.ContainerMonitoringConfiguration) (fwtypes.ListNestedObjectValueOf[containerMonitoringConfigurationModel], diag.Diagnostics) {
 	var diags diag.Diagnostics
 
 	objs := make([]*containerMonitoringConfigurationModel, 0, len(apiList))
@@ -482,8 +499,8 @@ func flattenContainerMonitoringConfigurations(ctx context.Context, apiList []aws
 		attrs := make([]*containerAttributeModel, 0, len(cfg.AttributeFilters))
 		for _, attr := range cfg.AttributeFilters {
 			attrs = append(attrs, &containerAttributeModel{
-				Key:   fwflex.StringToFramework(ctx, attr.Key),
-				Value: fwflex.StringToFramework(ctx, attr.Value),
+				Key:   flex.StringToFramework(ctx, attr.Key),
+				Value: flex.StringToFramework(ctx, attr.Value),
 			})
 		}
 
